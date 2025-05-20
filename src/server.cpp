@@ -2,6 +2,10 @@
 #include "ServerConfig.h"
 #include "TrackInfo.h"
 
+#ifdef _WIN32
+#include <windows.h> // Required for SetConsoleOutputCP
+#endif
+
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -64,6 +68,7 @@ void loadTrackCatalog() {
 
         for (const auto& entry : fs::directory_iterator(MUSIC_DIR)) {
             if (entry.path().extension() == ".mp3") {
+                // Use entry.path().string() for the full path
                 std::string filepath = entry.path().string();
                 std::string filename = entry.path().filename().string();
                 std::string id = filename.substr(0, filename.length() - 4);  // Remove .mp3
@@ -82,7 +87,8 @@ void loadTrackCatalog() {
 
                 // Try to load description file if it exists
                 if (fs::exists(desc_path)) {
-                    std::ifstream desc_file(desc_path);
+                    // Open JSON description file in binary mode to avoid encoding issues
+                    std::ifstream desc_file(desc_path, std::ios::binary);
                     if (desc_file.is_open()) {
                         try {
                             json desc_data = json::parse(desc_file);
@@ -103,7 +109,8 @@ void loadTrackCatalog() {
                     desc_data["album"] = "Unknown";
                     desc_data["duration"] = 0;
 
-                    std::ofstream desc_file(desc_path);
+                    // Open JSON description file in binary mode for writing
+                    std::ofstream desc_file(desc_path, std::ios::binary);
                     if (desc_file.is_open()) {
                         desc_file << desc_data.dump(4);
                         desc_file.close();
@@ -113,6 +120,7 @@ void loadTrackCatalog() {
                 }
 
                 track_catalog[id] = track;
+                // Output to console, ensuring console supports UTF-8
                 std::cout << "Loaded track: " << track.title << " (" << id << ")" << std::endl;
             }
         }
@@ -189,6 +197,7 @@ void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
         return;
     }
 
+    // Open description file in binary mode
     std::ifstream desc_file(track.description_path, std::ios::binary);
     if (!desc_file.is_open()) {
         // Failed to open file
@@ -241,6 +250,7 @@ void sendMp3File(socket_t client_socket, const std::string& track_id, int64_t st
         return;
     }
 
+    // Open MP3 file in binary mode
     std::ifstream mp3_file(track.filepath, std::ios::binary);
     if (!mp3_file.is_open()) {
         // Failed to open file
@@ -255,7 +265,7 @@ void sendMp3File(socket_t client_socket, const std::string& track_id, int64_t st
     size_t file_size = mp3_file.tellg();
 
     // Set position based on Range header
-    start_pos = std::max<int64_t>(0, std::min<int64_t>(start_pos, file_size));
+    start_pos = std::max<int64_t>(0, std::min<int64_t>(start_pos, (int64_t)file_size));
     mp3_file.seekg(start_pos, std::ios::beg);
 
     // Prepare and send HTTP header for MP3
@@ -343,6 +353,11 @@ void clientHandlerThread(socket_t client_socket) {
 }
 
 int main() {
+#ifdef _WIN32
+    // Set console output code page to UTF-8 for proper display of Unicode characters
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+
     // Initialize socket system on Windows
     if (!initializeSocketSystem()) {
         std::cerr << "Failed to initialize socket system." << std::endl;
