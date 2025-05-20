@@ -2,11 +2,11 @@
 
 // Track information structure
 struct TrackInfo {
-    std::string id;
-    std::string title;
-    std::string artist;
-    std::string album;
+    std::u8string id;
+    std::u8string title;
+    std::u8string artist;
+    std::u8string album;
     int duration;  // in seconds
-    std::string filepath;
-    std::string description_path;
+    std::u8string filepath;
+    std::u8string description_path;
 };

@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "ServerConfig.h"
 #include "TrackInfo.h"
+#include <locale>
+#include <codecvt>
+#include <string_view>
 
 #ifdef _WIN32
 #include <windows.h> // Required for SetConsoleOutputCP
@@ -12,6 +15,17 @@ namespace fs = std::filesystem;
 // Global variables
 std::unordered_map<std::string, TrackInfo> track_catalog;
 std::mutex catalog_mutex;
+
+// UTF-8 conversion utilities
+// Convert from UTF-8 string to std::u8string
+std::u8string toUtf8(const std::string& str) {
+    return std::u8string(reinterpret_cast<const char8_t*>(str.c_str()));
+}
+
+// Convert from std::u8string to UTF-8 string
+std::string fromUtf8(const std::u8string& u8str) {
+    return std::string(reinterpret_cast<const char*>(u8str.c_str()));
+}
 
 // Function to initialize socket system on Windows
 bool initializeSocketSystem() {
@@ -30,10 +44,11 @@ void cleanupSocketSystem() {
 #endif
 }
 
-// Function to URL-decode a string
-std::string urlDecode(const std::string& value) {
+// Function to URL-decode a string with UTF-8 support
+std::u8string urlDecode(const std::string& value) {
     std::string decoded;
     decoded.reserve(value.length());
+    
     for (size_t i = 0; i < value.length(); ++i) {
         if (value[i] == '%') {
             if (i + 2 < value.length()) {
@@ -51,7 +66,9 @@ std::string urlDecode(const std::string& value) {
             decoded += value[i];
         }
     }
-    return decoded;
+    
+    // Return as std::u8string
+    return toUtf8(decoded);
 }
 
 // Function to load track catalog from the music directory
@@ -62,76 +79,90 @@ void loadTrackCatalog() {
     try {
         if (!fs::exists(MUSIC_DIR)) {
             fs::create_directory(MUSIC_DIR);
-            std::cout << "Created music directory: " << MUSIC_DIR << std::endl;
+            std::cout << "Created music directory: " << "MUSIC_DIR" << std::endl;
             return;
         }
 
         for (const auto& entry : fs::directory_iterator(MUSIC_DIR)) {
             if (entry.path().extension() == ".mp3") {
-                // Use entry.path().string() for the full path
-                std::string filepath = entry.path().string();
-                std::string filename = entry.path().filename().string();
-                std::string id = filename.substr(0, filename.length() - 4);  // Remove .mp3
-                std::string desc_path = MUSIC_DIR + id + DESCRIPTION_EXT;
+                // Use entry.path().stem() to get the filename without any extension
+                std::u8string id = toUtf8(entry.path().stem().string());
+                std::u8string filepath = toUtf8(entry.path().string());
+                std::u8string description_path = MUSIC_DIR + id + DESCRIPTION_EXT;
 
                 TrackInfo track;
                 track.id = id;
                 track.filepath = filepath;
-                track.description_path = desc_path;
+                track.description_path = description_path;
 
                 // Default values in case description file doesn't exist
                 track.title = id;
-                track.artist = "Unknown";
-                track.album = "Unknown";
+                track.artist = toUtf8("Unknown");
+                track.album = toUtf8("Unknown");
                 track.duration = 0;
 
                 // Try to load description file if it exists
-                if (fs::exists(desc_path)) {
+                if (fs::exists(fromUtf8(description_path))) {
                     // Open JSON description file in binary mode to avoid encoding issues
-                    std::ifstream desc_file(desc_path, std::ios::binary);
+                    std::ifstream desc_file(fromUtf8(description_path), std::ios::binary);
                     if (desc_file.is_open()) {
                         try {
+                            // Skip UTF-8 BOM if present
+                            char bom[3];
+                            desc_file.read(bom, 3);
+                            if (!(bom[0] == (char)0xEF && bom[1] == (char)0xBB && bom[2] == (char)0xBF)) {
+                                // Not a BOM, go back to the beginning
+                                desc_file.seekg(0, std::ios::beg);
+                            }
+                            
                             json desc_data = json::parse(desc_file);
-                            track.title = desc_data.value("title", id);
-                            track.artist = desc_data.value("artist", "Unknown");
-                            track.album = desc_data.value("album", "Unknown");
+                            track.title = toUtf8(desc_data.value("title", fromUtf8(id)));
+                            track.artist = toUtf8(desc_data.value("artist", "Unknown"));
+                            track.album = toUtf8(desc_data.value("album", "Unknown"));
                             track.duration = desc_data.value("duration", 0);
-                        } catch (const std::exception& e) {
-                            std::cerr << "Error parsing " << desc_path << ": " << e.what() << std::endl;
+                        }
+                        catch (const std::exception& e) {
+                            std::cerr << "Error parsing " << fromUtf8(description_path) << ": " << e.what() << std::endl;
                         }
                         desc_file.close();
                     }
-                } else {
-                    // Create a default description file
+                }
+                else {
+                    // Create a default description file with UTF-8 encoding
                     json desc_data;
-                    desc_data["title"] = id;
+                    desc_data["title"] = fromUtf8(id);
                     desc_data["artist"] = "Unknown";
                     desc_data["album"] = "Unknown";
                     desc_data["duration"] = 0;
 
-                    // Open JSON description file in binary mode for writing
-                    std::ofstream desc_file(desc_path, std::ios::binary);
+                    // Open JSON description file in binary mode for writing with UTF-8 encoding
+                    std::ofstream desc_file(fromUtf8(description_path), std::ios::binary);
                     if (desc_file.is_open()) {
+                        // Add a UTF-8 BOM at the start
+                        desc_file << '\xEF' << '\xBB' << '\xBF';
+                        // Write JSON with proper UTF-8 encoding
                         desc_file << desc_data.dump(4);
                         desc_file.close();
-                    } else {
-                        std::cerr << "Failed to create description file: " << desc_path << std::endl;
+                    }
+                    else {
+                        std::cerr << "Failed to create description file: " << fromUtf8(description_path) << std::endl;
                     }
                 }
 
-                track_catalog[id] = track;
+                track_catalog[fromUtf8(id)] = track;
                 // Output to console, ensuring console supports UTF-8
-                std::cout << "Loaded track: " << track.title << " (" << id << ")" << std::endl;
+                std::cout << "Loaded track: " << fromUtf8(track.title) << " (" << fromUtf8(id) << ")" << std::endl;
             }
         }
 
         std::cout << "Loaded " << track_catalog.size() << " tracks into catalog." << std::endl;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         std::cerr << "Error loading track catalog: " << e.what() << std::endl;
     }
 }
 
-// Function to send HTTP response header
+// Function to send HTTP response header with UTF-8 support
 void sendHttpHeader(socket_t client_socket, int status_code, const std::string& content_type, size_t content_length) {
     std::string status_text;
     switch (status_code) {
@@ -142,7 +173,14 @@ void sendHttpHeader(socket_t client_socket, int status_code, const std::string& 
     }
 
     std::string header = "HTTP/1.1 " + std::to_string(status_code) + " " + status_text + "\r\n";
-    header += "Content-Type: " + content_type + "\r\n";
+    // Add UTF-8 charset to content type if not already present
+    std::string final_content_type = content_type;
+    if (content_type.find("charset=") == std::string::npos) {
+        if (content_type.find("text/") == 0 || content_type == "application/json") {
+            final_content_type += "; charset=utf-8";
+        }
+    }
+    header += "Content-Type: " + final_content_type + "\r\n";
     header += "Content-Length: " + std::to_string(content_length) + "\r\n";
     header += "Connection: close\r\n";
     header += "Access-Control-Allow-Origin: *\r\n";  // Enable CORS
@@ -151,7 +189,7 @@ void sendHttpHeader(socket_t client_socket, int status_code, const std::string& 
     send(client_socket, header.c_str(), header.length(), 0);
 }
 
-// Function to send catalog as JSON response
+// Function to send catalog as JSON response with UTF-8 support
 void sendCatalog(socket_t client_socket) {
     json catalog_json = json::array();
 
@@ -160,10 +198,10 @@ void sendCatalog(socket_t client_socket) {
         for (const auto& pair : track_catalog) {
             const TrackInfo& track = pair.second;
             json track_json;
-            track_json["id"] = track.id;
-            track_json["title"] = track.title;
-            track_json["artist"] = track.artist;
-            track_json["album"] = track.album;
+            track_json["id"] = fromUtf8(track.id);
+            track_json["title"] = fromUtf8(track.title);
+            track_json["artist"] = fromUtf8(track.artist);
+            track_json["album"] = fromUtf8(track.album);
             track_json["duration"] = track.duration;
             catalog_json.push_back(track_json);
         }
@@ -175,11 +213,11 @@ void sendCatalog(socket_t client_socket) {
     send(client_socket, response_body.c_str(), response_body.length(), 0);
 }
 
-// Function to send description file for a track
-void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
+// Function to send description file for a track with UTF-8 support
+void sendTrackDescription(socket_t client_socket, const std::u8string& track_id) {
     std::lock_guard<std::mutex> lock(catalog_mutex);
 
-    auto it = track_catalog.find(track_id);
+    auto it = track_catalog.find(fromUtf8(track_id));
     if (it == track_catalog.end()) {
         // Track not found
         std::string error_msg = "{\"error\": \"Track not found\"}";
@@ -189,7 +227,7 @@ void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
     }
 
     const TrackInfo& track = it->second;
-    if (!fs::exists(track.description_path)) {
+    if (!fs::exists(fromUtf8(track.description_path))) {
         // Description file not found
         std::string error_msg = "{\"error\": \"Description file not found\"}";
         sendHttpHeader(client_socket, 404, "application/json", error_msg.length());
@@ -198,7 +236,7 @@ void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
     }
 
     // Open description file in binary mode
-    std::ifstream desc_file(track.description_path, std::ios::binary);
+    std::ifstream desc_file(fromUtf8(track.description_path), std::ios::binary);
     if (!desc_file.is_open()) {
         // Failed to open file
         std::string error_msg = "{\"error\": \"Failed to open description file\"}";
@@ -211,6 +249,17 @@ void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
     desc_file.seekg(0, std::ios::end);
     size_t file_size = desc_file.tellg();
     desc_file.seekg(0, std::ios::beg);
+
+    // Check for UTF-8 BOM and skip it if present
+    char bom[3];
+    desc_file.read(bom, 3);
+    if (bom[0] == (char)0xEF && bom[1] == (char)0xBB && bom[2] == (char)0xBF) {
+        // BOM found, adjust file size
+        file_size -= 3;
+    } else {
+        // Not a BOM, go back to the beginning
+        desc_file.seekg(0, std::ios::beg);
+    }
 
     // Prepare and send HTTP header
     sendHttpHeader(client_socket, 200, "application/json", file_size);
@@ -229,10 +278,10 @@ void sendTrackDescription(socket_t client_socket, const std::string& track_id) {
 }
 
 // Function to send MP3 file data
-void sendMp3File(socket_t client_socket, const std::string& track_id, int64_t start_pos = 0) {
+void sendMp3File(socket_t client_socket, const std::u8string& track_id, int64_t start_pos = 0) {
     std::lock_guard<std::mutex> lock(catalog_mutex);
 
-    auto it = track_catalog.find(track_id);
+    auto it = track_catalog.find(fromUtf8(track_id));
     if (it == track_catalog.end()) {
         // Track not found
         std::string error_msg = "Track not found";
@@ -242,7 +291,7 @@ void sendMp3File(socket_t client_socket, const std::string& track_id, int64_t st
     }
 
     const TrackInfo& track = it->second;
-    if (!fs::exists(track.filepath)) {
+    if (!fs::exists(fromUtf8(track.filepath))) {
         // MP3 file not found
         std::string error_msg = "MP3 file not found";
         sendHttpHeader(client_socket, 404, "text/plain", error_msg.length());
@@ -251,7 +300,7 @@ void sendMp3File(socket_t client_socket, const std::string& track_id, int64_t st
     }
 
     // Open MP3 file in binary mode
-    std::ifstream mp3_file(track.filepath, std::ios::binary);
+    std::ifstream mp3_file(fromUtf8(track.filepath), std::ios::binary);
     if (!mp3_file.is_open()) {
         // Failed to open file
         std::string error_msg = "Failed to open MP3 file";
@@ -324,12 +373,12 @@ void handleHttpRequest(socket_t client_socket) {
     } else if (path.find("/description/") == 0) {
         // Return the description file for a specific track
         std::string encoded_track_id = path.substr(13);  // Remove "/description/"
-        std::string track_id = urlDecode(encoded_track_id); // Decode the track ID
+        std::u8string track_id = urlDecode(encoded_track_id); // Decode the track ID to UTF-8
         sendTrackDescription(client_socket, track_id);
     } else if (path.find("/stream/") == 0) {
         // Stream the MP3 file for a specific track
         std::string encoded_track_id = path.substr(8);  // Remove "/stream/"
-        std::string track_id = urlDecode(encoded_track_id); // Decode the track ID
+        std::u8string track_id = urlDecode(encoded_track_id); // Decode the track ID to UTF-8
         sendMp3File(client_socket, track_id, range_start);
     } else if (path == "/reload") {
         // Reload the track catalog
@@ -356,6 +405,15 @@ int main() {
 #ifdef _WIN32
     // Set console output code page to UTF-8 for proper display of Unicode characters
     SetConsoleOutputCP(CP_UTF8);
+    
+    // Also set console input code page to UTF-8
+    SetConsoleCP(CP_UTF8);
+    
+    // Set locale to UTF-8 for proper string handling
+    std::setlocale(LC_ALL, ".UTF8");
+#else
+    // On Unix systems, set locale to UTF-8
+    std::setlocale(LC_ALL, "en_US.UTF-8");
 #endif
 
     // Initialize socket system on Windows
