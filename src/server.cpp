@@ -1,44 +1,9 @@
 #include "pch.h"
-
-// Socket headers
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
-    typedef SOCKET socket_t;
-    #define SOCKET_ERROR_CODE SOCKET_ERROR
-    #define CLOSE_SOCKET(s) closesocket(s)
-#else
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #include <fcntl.h>
-    typedef int socket_t;
-    #define INVALID_SOCKET -1
-    #define SOCKET_ERROR_CODE -1
-    #define CLOSE_SOCKET(s) close(s)
-#endif
+#include "ServerConfig.h"
+#include "TrackInfo.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
-
-// Server configuration
-const int PORT = 8080;
-const size_t BUFFER_SIZE = 8192;
-const std::string MUSIC_DIR = "music/";
-const std::string DESCRIPTION_EXT = ".json";
-
-// Track information structure
-struct TrackInfo {
-    std::string id;
-    std::string title;
-    std::string artist;
-    std::string album;
-    int duration;  // in seconds
-    std::string filepath;
-    std::string description_path;
-};
 
 // Global variables
 std::unordered_map<std::string, TrackInfo> track_catalog;
